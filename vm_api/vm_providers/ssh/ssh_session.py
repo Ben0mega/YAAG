@@ -133,7 +133,7 @@ class SSHJob(VMJob):
 		return self.exit_code
 
 	def kill(self):
-		jb = self.session(['/usr/bin/kill','-9',self.pid])
+		jb = self.session.runCmd(['/usr/bin/kill','-9',self.pid])
 		jb.wait()
 
 def md5Parse(strs):
