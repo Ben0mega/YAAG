@@ -1,5 +1,7 @@
-/* Stops a process to get stats for it - based off of stopper.c which
- * had the following notice:
+/*
+ *	Stops a process to get stats for it - adapted from stopper.c ,
+ * retrieved from http://www.wienand.org/junkcode/linux/stopper.c
+ * which has the following notice:
  * very simple ptrace example to stop a process before it exits.  This
  * allows us to inspect /proc/pid/ values, for example.
  * (C) 2007 Ian Wienand <ianw@ieee.org>
