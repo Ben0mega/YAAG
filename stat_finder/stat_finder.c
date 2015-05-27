@@ -6,8 +6,6 @@
  * Public Domain
  */
 
-// TODO: look into perf_event_open for monitoring the cache
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -20,163 +18,54 @@
 #include <sys/stat.h>
 #include <sys/param.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 #include <sys/time.h>
-
 
 #include <sys/ptrace.h>
 
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
 #include <asm/unistd.h>
+#include <unistd.h>
 
 #include "perf_stats.h"
 #include "proc.h"
+#include "util.h"
 
-/* for some reason glibc doesn't yet include the PTRACE_OPTIONS,
- * clagged from kernel */
+static void wait_for_exit(void) __attribute__((noreturn));
+static void write_stats(struct rusage* ru, long return_code);
 
-/* options set using PTRACE_SETOPTIONS */
-#define PTRACE_O_TRACESYSGOOD   0x00000001
-#define PTRACE_O_TRACEFORK      0x00000002
-#define PTRACE_O_TRACEVFORK     0x00000004
-#define PTRACE_O_TRACECLONE     0x00000008
-#define PTRACE_O_TRACEEXEC      0x00000010
-#define PTRACE_O_TRACEVFORKDONE 0x00000020
-#define PTRACE_O_TRACEEXIT      0x00000040
+static pid_t pid;
+static struct timeval start;
+static char outfile[FILENAME_MAX] = "stat.out";
 
-#define PTRACE_O_MASK           0x0000007f
+static const char* usage = "[-f output_file] command";
 
-/* Wait extended result codes for the above trace options.  */
-#define PTRACE_EVENT_FORK       1
-#define PTRACE_EVENT_VFORK      2
-#define PTRACE_EVENT_CLONE      3
-#define PTRACE_EVENT_EXEC       4
-#define PTRACE_EVENT_VFORK_DONE 5
-#define PTRACE_EVENT_EXIT       6
-
-static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
-	int cpu, int group_fd, unsigned long flags) {
-	return  syscall(__NR_perf_event_open, hw_event,
-		pid, cpu, group_fd, flags);
-}
-
-
-pid_t pid;
-struct timeval start;
-
-void write_stats(pid_t pid, const char * dest_filename, struct rusage* ru,
-		struct timeval *start, struct timeval *end, int ret){
-	FILE* fout = fopen(dest_filename, "w");
-
-	for(int i = 0; stats[i].name; ++i){
-		printPerf(fout, stats[i].file, stats[i].name);
-		close(stats[i].file);
-	}
-	struct statStuff s;
-	if(readStat(pid, &s)){
-		printStat(fout, &s);
-	}
-
-	struct statmStuff sm;
-	if(readStatm(pid, &sm)){
-		printStatm(fout, &sm);
-	}
-
-	struct statusStuff ss;
-	if(readStatus(pid, &ss)){
-		printStatus(fout, &ss);
-	}
-
-	struct ioStuff is;
-	if(readIO(pid, &is)){
-		printIO(fout, &is);
-	}
-
-	printRusage(fout, ru);
-
-
-	printTimeDiff(fout, start, end);
-	printReturnCode(fout, ret);
-	fclose(fout);
-}
-
-const char *outfile=NULL;
-char filename[FILENAME_MAX];
-const char *default_outfile = "stat.out";
-
-/* wait for the pid to exit */
-void wait_for_exit(void)
-{
-	int status;
-	struct rusage ru;
-	while (1) {
-		/* wait for signal from child */
-		wait4(pid, &status, 0, &ru);
-
-		/* any signal stops the child, so check that
-		   the incoming signal is a SIGTRAP and the
-		   event_exit flag is set */
-		if ( (WSTOPSIG(status) == SIGTRAP) &&
-		     (status & (PTRACE_EVENT_EXIT << 8)))
-			break;
-
-		/* if not, pass the original signal onto the child */
-		if (ptrace(PTRACE_CONT, pid, 0, WSTOPSIG(status))) {
-			perror("stopper: ptrace(PTRACE_CONT, ...)");
-			exit(1);
-		}
-	}
-	struct timeval end;
-	gettimeofday(&end, NULL);
-	long ret_code;
-	ptrace(PTRACE_GETEVENTMSG, pid, 0, &ret_code);
-	write_stats(pid, outfile, &ru, &start, &end, ret_code);
-	if (ptrace(PTRACE_CONT, pid, 0, 0)) {
-		perror("stopper: ptrace(PTRACE_CONT, ...)");
-		exit(1);
-	}
-	exit(0);
-}
-
-void perf_events(pid_t pid){
-	for(int i = 0; stats[i].name; ++i){
-		stats[i].file = perf_event_open(&stats[i].attr, pid, -1, -1, PERF_FLAG_FD_CLOEXEC);
-	}
-}
-
-
-const char *usage = "[-f output_file] command";
-
-
-int main(int argc, char *argv[])
-{
-	extern char *optarg;
+int main(int argc, char* argv[]) {
+	extern char* optarg;
 	extern int optind, opterr, optopt;
 	char c;
-	outfile = default_outfile;
 
-	while ((c = getopt(argc, argv,
-			   "+f:")) != -1) {
+	while ((c = getopt(argc, argv, "+f:")) != -1) {
 		switch (c) {
 
-		case 'f':
-			strncpy((char*)filename, optarg, sizeof(filename)/sizeof(char));
-			outfile = filename;
-			break;
-		default:
-			printf("Usage: %s %s\n", argv[0], usage);
-			exit(1);
+			case 'f':
+				strncpy((char*)outfile, optarg, sizeof(outfile) / sizeof(char));
+				break;
+			default:
+				printf("Usage: %s %s\n", argv[0], usage);
+				exit(1);
 		}
 	}
 
-	if(optind == argc){
+	if (optind == argc) {
 		printf("Usage: %s %s\n", argv[0], usage);
 		exit(1);
 	}
 
 	/* find the file to exec, borrowed from strace */
 	struct stat statbuf;
-	char *filename;
+	char* filename;
 	char pathname[MAXPATHLEN];
 
 	filename = argv[optind];
@@ -187,84 +76,149 @@ int main(int argc, char *argv[])
 			exit(1);
 		}
 		strcpy(pathname, filename);
-	}
-	else {
-		char *path;
+	} else {
+		char* path;
 		int m, n, len;
 
 		for (path = getenv("PATH"); path && *path; path += m) {
 			if (strchr(path, ':')) {
 				n = strchr(path, ':') - path;
 				m = n + 1;
-			}
-			else
+			} else {
 				m = n = strlen(path);
+			}
 			if (n == 0) {
 				getcwd(pathname, MAXPATHLEN);
 				len = strlen(pathname);
-			}
-			else if (n > sizeof pathname - 1)
+			} else if (n > sizeof pathname - 1) {
 				continue;
-			else {
-                                       strncpy(pathname, path, n);
-                                       len = n;
+			} else {
+				strncpy(pathname, path, n);
+				len = n;
 			}
-			if (len && pathname[len - 1] != '/')
+			if (len && pathname[len - 1] != '/') {
 				pathname[len++] = '/';
+			}
 			strcpy(pathname + len, filename);
 			if (stat(pathname, &statbuf) == 0 &&
-			    /* Accept only regular files
-			       with some execute bits set.
-			       XXX not perfect, might still fail */
-			    S_ISREG(statbuf.st_mode) &&
-			    (statbuf.st_mode & 0111))
+					/* Accept only regular files
+					 with some execute bits set.
+					 XXX not perfect, might still fail */
+					S_ISREG(statbuf.st_mode) && (statbuf.st_mode & 0111)) {
 				break;
+			}
 		}
 	}
 
 	if (stat(pathname, &statbuf) < 0) {
-		fprintf(stderr, "%s: %s: command not found\n",
-			argv[0], filename);
+		fprintf(stderr, "%s: %s: command not found\n", argv[0], filename);
 		exit(1);
 	}
 
 	gettimeofday(&start, NULL);
 	switch (pid = fork()) {
-	case -1:
-		perror("stopper: fork");
-		exit(1);
-		break;
-	case 0:
-		if (ptrace(PTRACE_TRACEME, 0, (char *)1, 0) < 0) {
-			perror("stopper: ptrace(PTRACE_TRACEME, ...)");
-			return -1;
-		}
-		execv(pathname, &argv[optind]);
-		perror("stopper: execv");
-		_exit(1);
+		case (pid_t) - 1:
+			perror("stopper: fork");
+			exit(1);
+			break;
+		case 0:
+			if (ptrace(PTRACE_TRACEME, 0, (char*)1, 0) < 0) {
+				perror("stopper: ptrace(PTRACE_TRACEME, ...)");
+				return -1;
+			}
+			execv(pathname, &argv[optind]);
+			perror("stopper: execv");
+			_exit(1);
 
-	default:
-		/* wait for first signal, which is from child when it execs */
-		wait(NULL);
+		default:
+			/* wait for first signal, which is from child when it execs */
+			wait(NULL);
 
-		/* set option to tell us when the signal exits */
-		if (ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACEEXIT)) {
-			perror("stopper: ptrace(PTRACE_SETOPTIONS, ...)");
-			return -1;
-		}
+			/* set option to tell us when the signal exits */
+			if (ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACEEXIT)) {
+				perror("stopper: ptrace(PTRACE_SETOPTIONS, ...)");
+				return -1;
+			}
 
-		/* perf all the things! */
-		perf_events(pid);
+			/* perf all the things! */
+			init_perf_events(pid);
 
-		/* allow child to continue */
-		if (ptrace(PTRACE_CONT, pid, 0, (void*)0)) {
-			perror("stopper: ptrace(PTRACE_CONT, ...)");
-			return -1;
-		}
+			/* allow child to continue */
+			if (ptrace(PTRACE_CONT, pid, 0, (void*)0)) {
+				perror("stopper: ptrace(PTRACE_CONT, ...)");
+				return -1;
+			}
 
-		wait_for_exit();
+			wait_for_exit();
 	}
 
 	/* shouldn't get here */
 	exit(1);
+}
+
+/* wait for the pid to exit */
+void wait_for_exit(void) {
+	int status;
+	struct rusage ru;
+	while (1) {
+		/* wait for signal from child */
+		wait4(pid, &status, 0, &ru);
+
+		/* any signal stops the child, so check that
+			the incoming signal is a SIGTRAP and the
+			event_exit flag is set */
+		if ((WSTOPSIG(status) == SIGTRAP) && (status & (PTRACE_EVENT_EXIT << 8))) {
+			break;
+		}
+
+		/* if not, pass the original signal onto the child */
+		if (ptrace(PTRACE_CONT, pid, 0, WSTOPSIG(status))) {
+			perror("stopper: ptrace(PTRACE_CONT, ...)");
+			exit(1);
+		}
+	}
+
+	long ret_code;
+	ptrace(PTRACE_GETEVENTMSG, pid, 0, &ret_code);
+	write_stats(&ru, ret_code);
+
+	if (ptrace(PTRACE_CONT, pid, 0, 0)) {
+		perror("stopper: ptrace(PTRACE_CONT, ...)");
+		exit(1);
+	}
+	exit(0);
+}
+
+void write_stats(struct rusage* ru, long ret) {
+	FILE* fout = fopen(outfile, "w");
+	struct timeval end;
+	gettimeofday(&end, NULL);
+
+	printPerf(fout);
+
+	struct statStuff s;
+	if (readStat(pid, &s)) {
+		printStat(fout, &s);
+	}
+
+	struct statmStuff sm;
+	if (readStatm(pid, &sm)) {
+		printStatm(fout, &sm);
+	}
+
+	struct statusStuff ss;
+	if (readStatus(pid, &ss)) {
+		printStatus(fout, &ss);
+	}
+
+	struct ioStuff is;
+	if (readIO(pid, &is)) {
+		printIO(fout, &is);
+	}
+
+	printRusage(fout, ru);
+
+	printTimeDiff(fout, &start, &end);
+	printReturnCode(fout, ret);
+	fclose(fout);
 }
