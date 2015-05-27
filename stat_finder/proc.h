@@ -316,8 +316,8 @@ struct statusStuff {
 	char Cpus_allowed_list[LINE_MAX + 1];	// 0-7
 	unsigned long Mems_allowed[2];	//  00000000,00000001
 	char Mems_allowed_list[LINE_MAX + 1];	// 0
-	unsigned long voluntary_ctxt_switches;
-	unsigned long nonvoluntary_ctxt_switches;	//	00000000,00000001
+	unsigned long voluntary_ctxt_switches; // 924
+	unsigned long nonvoluntary_ctxt_switches;	//	32
 };
 
 static int _readStatus(FILE* proc, struct statusStuff* s) {
