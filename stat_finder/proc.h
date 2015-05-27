@@ -1,6 +1,6 @@
 /*
-	Adapted with thanks from Prof. Alva L. Couch's code, retrieved
-	from http://www.cs.tufts.edu/comp/111/assignments/a3/proc.c
+	Adapted from Prof. Alva L. Couch's code, with thanks,
+	retrieved from http://www.cs.tufts.edu/comp/111/assignments/a3/proc.c
 */
 
 #ifndef PROC_H
